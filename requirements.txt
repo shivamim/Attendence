@@ -1,6 +1,7 @@
 streamlit
 streamlit-autorefresh
-opencv-python
+opencv-python-headless
 scikit-learn
 numpy
 pandas
+face_recognition
