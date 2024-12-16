@@ -1,2 +1,1 @@
-# Attendence
-Attendance System
+# face_recognition_project
