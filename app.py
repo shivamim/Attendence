@@ -1,147 +1,115 @@
-import os
+import streamlit as st
 import face_recognition
 import cv2
-import pandas as pd
 import numpy as np
-import streamlit as st
+import pandas as pd
+import os
 from datetime import datetime
 
-# ============================
-# 1. Initialize Directories
-# ============================
-TRAINING_DIR = "Training_Images"
+# Set paths
+FACES_DIR = "known_faces"
 ATTENDANCE_DIR = "Attendance"
+ENCODINGS_FILE = "face_encodings.csv"
 
-if not os.path.exists(TRAINING_DIR):
-    os.makedirs(TRAINING_DIR)
+# Create directories if they don't exist
+os.makedirs(FACES_DIR, exist_ok=True)
+os.makedirs(ATTENDANCE_DIR, exist_ok=True)
 
-if not os.path.exists(ATTENDANCE_DIR):
-    os.makedirs(ATTENDANCE_DIR)
+# Function to load encodings from CSV
+def load_encodings():
+    if os.path.exists(ENCODINGS_FILE):
+        return pd.read_csv(ENCODINGS_FILE)
+    else:
+        return pd.DataFrame(columns=["Name", "Encoding"])
 
-# ============================
-# 2. Encode Training Images
-# ============================
-def train_faces(training_dir):
-    """
-    Encodes all faces from images inside Training_Images.
-    """
-    encodings = []
-    names = []
-    
-    for person_name in os.listdir(training_dir):
-        person_folder = os.path.join(training_dir, person_name)
-        if os.path.isdir(person_folder):
-            for filename in os.listdir(person_folder):
-                img_path = os.path.join(person_folder, filename)
-                image = face_recognition.load_image_file(img_path)
-                face_locations = face_recognition.face_locations(image)
-                if face_locations:
-                    face_encoding = face_recognition.face_encodings(image, face_locations)[0]
-                    encodings.append(face_encoding)
-                    names.append(person_name)
-    return encodings, names
+# Function to save encodings to CSV
+def save_encodings(df):
+    df.to_csv(ENCODINGS_FILE, index=False)
 
-# ============================
-# 3. Save Attendance
-# ============================
-def mark_attendance(name):
-    """
-    Marks attendance in a CSV file based on today's date.
-    """
-    today = datetime.now().strftime("%d-%m-%Y")
-    file_path = os.path.join(ATTENDANCE_DIR, f"Attendance_{today}.csv")
-    
-    if os.path.exists(file_path):
+# Function to encode face and add to dataset
+def add_face(name, image_file):
+    image = face_recognition.load_image_file(image_file)
+    encodings = face_recognition.face_encodings(image)
+
+    if len(encodings) > 0:
+        encoding = encodings[0]
+        df_encodings = load_encodings()
+        encoding_str = np.array2string(encoding, separator=",", max_line_width=np.inf)
+        df_encodings = df_encodings.append({"Name": name, "Encoding": encoding_str}, ignore_index=True)
+        save_encodings(df_encodings)
+        return "Face added successfully!"
+    else:
+        return "No face detected in the image!"
+
+# Function to compare face and mark attendance
+def mark_attendance(test_image_file):
+    test_image = face_recognition.load_image_file(test_image_file)
+    test_encoding = face_recognition.face_encodings(test_image)
+
+    if len(test_encoding) == 0:
+        return "No face detected in the uploaded image."
+
+    test_encoding = test_encoding[0]
+    df_encodings = load_encodings()
+
+    known_encodings = []
+    known_names = []
+
+    for _, row in df_encodings.iterrows():
+        known_names.append(row["Name"])
+        known_encodings.append(np.fromstring(row["Encoding"][1:-1], sep=","))
+
+    # Compare face encodings
+    matches = face_recognition.compare_faces(known_encodings, test_encoding)
+    name = "Unknown"
+
+    if True in matches:
+        match_index = matches.index(True)
+        name = known_names[match_index]
+        mark_attendance_csv(name)
+        return f"Attendance marked for {name}"
+    else:
+        return "No match found. Face not recognized."
+
+# Function to mark attendance in CSV
+def mark_attendance_csv(name):
+    date = datetime.now().strftime("%d-%m-%Y")
+    file_path = os.path.join(ATTENDANCE_DIR, f"Attendance_{date}.csv")
+
+    if not os.path.exists(file_path):
+        df = pd.DataFrame(columns=["Name", "Time"])
+    else:
         df = pd.read_csv(file_path)
-    else:
-        df = pd.DataFrame(columns=["Name", "Timestamp"])
 
-    # Check if attendance already marked
-    if name not in df["Name"].values:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        new_entry = {"Name": name, "Timestamp": timestamp}
-        df = df.append(new_entry, ignore_index=True)
-        df.to_csv(file_path, index=False)
-        st.success(f"✅ Attendance marked for {name}")
-    else:
-        st.info(f"ℹ️ Attendance already marked for {name}")
+    time_now = datetime.now().strftime("%H:%M:%S")
+    df = df.append({"Name": name, "Time": time_now}, ignore_index=True)
+    df.to_csv(file_path, index=False)
 
-# ============================
-# 4. Recognize Faces
-# ============================
-def recognize_faces(known_encodings, known_names, captured_image):
-    """
-    Recognizes faces from a captured image and returns matching names.
-    """
-    recognized_names = []
-    image = face_recognition.load_image_file(captured_image)
-    face_locations = face_recognition.face_locations(image)
-    face_encodings = face_recognition.face_encodings(image, face_locations)
+# Streamlit UI
+st.title("Face Recognition Attendance System")
 
-    for face_encoding in face_encodings:
-        matches = face_recognition.compare_faces(known_encodings, face_encoding)
-        name = "Unknown"
+menu = ["Add Face", "Mark Attendance"]
+choice = st.sidebar.selectbox("Select an Option", menu)
 
-        if True in matches:
-            first_match_index = matches.index(True)
-            name = known_names[first_match_index]
-        recognized_names.append(name)
-    return recognized_names
+if choice == "Add Face":
+    st.header("Add a New Face")
+    name = st.text_input("Enter the name of the person:")
+    image_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
 
-# ============================
-# 5. Streamlit UI
-# ============================
-st.title("📷 Face Recognition Attendance System")
-
-# Step 1: Train Model
-st.header("Step 1: Train Faces")
-if st.button("Train Faces"):
-    known_encodings, known_names = train_faces(TRAINING_DIR)
-    np.save("known_encodings.npy", known_encodings)
-    np.save("known_names.npy", known_names)
-    st.success("🎉 Training completed successfully!")
-
-# Step 2: Capture and Recognize
-st.header("Step 2: Mark Attendance")
-
-uploaded_file = st.file_uploader("Upload a captured image", type=["jpg", "jpeg", "png"])
-
-if uploaded_file:
-    # Load trained model
-    if os.path.exists("known_encodings.npy") and os.path.exists("known_names.npy"):
-        known_encodings = np.load("known_encodings.npy", allow_pickle=True)
-        known_names = np.load("known_names.npy", allow_pickle=True)
-        
-        # Save uploaded image temporarily
-        temp_image_path = "temp_image.jpg"
-        with open(temp_image_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
-        # Recognize faces
-        recognized_names = recognize_faces(known_encodings, known_names, temp_image_path)
-        if recognized_names:
-            st.image(uploaded_file, caption="Uploaded Image", use_column_width=True)
-            st.write("### Recognized Faces:")
-            for name in recognized_names:
-                if name != "Unknown":
-                    st.success(f"✔️ {name}")
-                    mark_attendance(name)
-                else:
-                    st.warning("❗ Unknown Face Detected")
+    if st.button("Add Face"):
+        if name and image_file:
+            result = add_face(name, image_file)
+            st.success(result)
         else:
-            st.error("No faces detected in the uploaded image.")
-    else:
-        st.error("⚠️ Please train the model first using 'Train Faces'.")
+            st.warning("Please provide a name and upload an image.")
 
-# Step 3: View Attendance
-st.header("Step 3: View Attendance")
+elif choice == "Mark Attendance":
+    st.header("Mark Attendance")
+    test_image_file = st.file_uploader("Upload an image to mark attendance", type=["jpg", "jpeg", "png"])
 
-today = datetime.now().strftime("%d-%m-%Y")
-file_path = os.path.join(ATTENDANCE_DIR, f"Attendance_{today}.csv")
-
-if os.path.exists(file_path):
-    df = pd.read_csv(file_path)
-    st.write("### Attendance for Today:")
-    st.dataframe(df)
-else:
-    st.info("⚠️ No attendance has been marked for today.")
+    if st.button("Mark Attendance"):
+        if test_image_file:
+            result = mark_attendance(test_image_file)
+            st.success(result)
+        else:
+            st.warning("Please upload an image.")
